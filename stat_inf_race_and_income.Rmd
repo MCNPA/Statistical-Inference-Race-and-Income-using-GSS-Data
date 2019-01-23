@@ -1,0 +1,373 @@
+---
+title: "Statistical inference: Race and Income using GSS Data"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+---
+
+## Setup
+
+### Load packages
+```{r load-packages, message = FALSE}
+library(ggplot2)
+library(dplyr)
+library(statsr)
+library(tidyr)
+```
+
+### Load data, 
+```{r load-data}
+load("gss.gz")
+```
+
+* * *
+
+## Part 1: Data
+
+This analysis was conducted using data from the General Social Survey (GSS). The GSS gathers data on contemporary American society in order to monitor and explain trends and constants in attitudes, behaviors, and attributes.  The GSS contains a standard core of demographic, behavioral, and attitudinal questions, plus topics of special interest. Among the topics covered are civil liberties, crime and violence, intergroup tolerance, morality, national spending priorities, psychological well-being, social mobility, and stress and traumatic events. 
+
+Sampling was done through a stratified, random process.  Conclusions made in this analysis are generalizable to the population at large due to the random sampling. However, no statements can be made in regards to causality because a randomly assigned experiment was not conducted.  
+This analysis will focus on the differences in income between blacks and whites, controlling for obvious confounding variables, age, sex, and education.
+
+
+
+```{r}
+#create new data frame 
+#scrubbing NA's
+new_gss <- gss %>%
+  filter(race != "Other") %>%
+  #create factor for age, range 20 - 65
+  mutate (age_range = case_when(
+                        age <= 42 ~ "young",
+                        age <= 59 ~ "middle-aged",
+                        age >= 60 ~  "old"
+                      )
+  ) %>%
+  select(age_range, sex, race, degree, income = incom16) %>%
+  filter(!is.na(income) & !is.na(age_range) & !is.na(degree) & income != "Lived In Institution")
+
+new_gss$age_range <- as.factor(new_gss$age_range)
+new_gss$race <- droplevels(new_gss$race)
+new_gss$income <- droplevels(new_gss$income)
+
+#summary table of data split by race
+new_gss %>%
+  filter(race == "White") %>%
+  summary() 
+new_gss %>%
+  filter(race == "Black") %>%
+  summary()
+ 
+```
+
+## Part 2: Research Question
+Is there a statistically significant difference in incomes between white and black workers? First, we will explore without considering any confounding variables and see if the null hypothesis (no difference) can be rejected
+
+## Part 3: Analysis
+
+```{r}
+#exploratory plot of income distributions by race and summary stats
+ggplot(data = new_gss, aes(x=income, fill = race)) + 
+  geom_bar() + 
+  facet_wrap(~ race, scales = "free" ) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  labs(title = "Income Distribution by Race")
+
+new_gss %>%
+  group_by(race) %>%
+   summarize(
+    #find the proportion of each factor level of income
+    prop_far_below = mean(income == "Far Below Average"),
+    prop_below = mean(income == "Below Average"),
+    prop_avg = mean(income == "Average"),
+    prop_above = mean(income == "Above Average"),
+    prop_far_above = mean(income == "Far Above Average")
+   )
+
+```
+Income distribution appears to be normal for whites and left-skewed for blacks--meaning blacks are over-presented in the lower income brackets and under-represented in the upper brackets.  It is, therefore, worth conducting statistical inference at each of the 5 income levels.  The null hypothesis is that there is no statistical difference between blacks and whites at each income level.  The alternative hypothesis is that blacks are overrepresented at the 3 lower income ranges and underrepresented at the higher 2 levels.  Inferences will be conducted by creating a null distribution through permutation and randomization--meaning a distribution based on random chance, so the mean difference between blacks and whites would be centered at zero.
+```{r}
+#create random permutation of income column with 1000 replicate data sets
+#this will create the null distribution
+perm_gss <- new_gss %>% 
+  rep_sample_n(size = 40928, reps = 1000) %>%
+  mutate(income_perm = sample(income)) 
+```
+
+```{r}
+differnt<-perm_gss%>%
+  group_by(replicate, race)%>%
+  summarize(
+    #find the proportion of each factor level of income
+    prop_avg = mean(income == "Average"),
+    prop_far_below = mean(income == "Far Below Average"),
+    prop_below = mean(income == "Below Average"),
+    prop_above = mean(income == "Above Average"),
+    prop_far_above = mean(income == "Far Above Average"),
+    #find the proportion ofeach factor level of random permuted incom
+    prop_avg_perm = mean(income_perm == "Average"),
+    prop_far_below_perm = mean(income_perm == "Far Below Average"),
+    prop_below_perm = mean(income_perm == "Below Average"),
+    prop_above_perm = mean(income_perm == "Above Average"),
+    prop_far_above_perm = mean(income_perm == "Far Above Average")
+  ) %>%
+  summarize(
+    #difference in incomes for each level by race
+    #
+    diff_avg = diff(prop_avg),
+    diff_far_below = diff(prop_far_below),
+    diff_below = diff(prop_below),
+    diff_above = diff(prop_above),
+    diff_far_above = diff(prop_far_above),
+    #differences in incomes for each random permuted level by race
+    #because the values were created through random sampling
+    #should be a null distribution centered around mean zero
+    diff_avg_perm = diff(prop_avg_perm),
+    diff_far_below_perm = diff(prop_far_below_perm),
+    diff_below_perm = diff(prop_below_perm),
+    diff_above_perm = diff(prop_above_perm),
+    diff_far_above_perm = diff(prop_far_above_perm)
+  )
+#calculate p-values
+p_values <- differnt %>%
+  summarize(
+    pval_far_below = mean(diff_far_below_perm >= diff_far_below),
+    pval_below = mean(diff_below_perm >= diff_below),
+    pval_avg = mean(diff_avg_perm <= diff_avg),
+    pval_above = mean(diff_above_perm <= diff_above),
+    pval_far_above = mean(diff_far_above_perm <= diff_far_above)
+  )  
+p_values
+```
+
+All things being equal, we reject the null hypothesis that there is a no difference in incomes between whites and blacks for the the first 4 income levels.  At the highest income level we fail to reject the null.
+```{r}
+#plot p_hat on null distribution for the "average" level (rejected null), and the "far above level"(fail to reject)
+par(mfrow=c(1,5))
+
+differnt %>%
+  ggplot(aes(x=diff_far_below_perm))+
+    geom_density(col = "grey")+
+    geom_dotplot(binwidth = .001)+
+    geom_vline(aes(xintercept = diff_far_below), col = "red") +
+    scale_y_continuous(limits = c(0,1000))+
+    theme_classic() + 
+    labs(title = "Difference in Proportion, Far Below Average Income")
+
+differnt %>%
+  ggplot(aes(x=diff_below_perm))+
+    geom_density(col = "grey")+
+    geom_dotplot(binwidth = .001)+
+    geom_vline(aes(xintercept = diff_below), col = "red") +
+    scale_y_continuous(limits = c(0,300))+
+    theme_classic() + 
+    labs(title = "Difference in Proportion, Below Average Income")
+
+differnt %>%
+  ggplot(aes(x=diff_avg_perm))+
+    geom_density(col = "grey")+
+    geom_dotplot(binwidth = .001)+
+    geom_vline(aes(xintercept = diff_avg), col = "red") +
+    theme_classic() + 
+   scale_y_continuous(limits = c(0,300))+
+    labs(title = "Difference in Proportion, Average Income")
+
+differnt %>%
+  ggplot(aes(x=diff_above_perm))+
+    geom_density(col = "grey")+
+    geom_dotplot(binwidth = .001)+
+    geom_vline(aes(xintercept = diff_above), col = "red") +
+    theme_classic() + 
+   scale_y_continuous(limits = c(0,300))+
+    labs(title = "Above Average Income")
+
+differnt %>%
+  ggplot(aes(x=diff_far_above_perm))+
+    geom_dotplot(binwidth = .0001)+
+    geom_density(col = "grey")+
+    geom_vline(aes(xintercept = diff_far_above), col = "red")+
+    theme_classic()+
+    labs(title = "Difference in Proportion: Far Above Average Income")
+
+```
+
+
+An explanation of permuted inference.  The data is replicated 1000 times, each new set of data is called a "replicate".  Within each replicate, the data is duplicated once more, with one set left original and the duplicate set is randomly shuffled. 
+
+Then, for each replicate (the 1000 sets we created), we split the  observations by race (black or white) and then find the proportion of observations for each income level.  We take the difference in proportion between black and white for each of these income levels--this is our sample statistic.  With the original data, the sample statistic is the same for all 1000 replicates (of course because the data are copies).  The red line on the plot is the difference in proportion between blacks and whites at a given income level. With the shuffled data, the sample statistic varies within a range--creating a distribution that is nearly normal with mean/center at 0.  Each black dot represents one of the 1000 data sets.  
+
+You can see in the case of the Far Above Average income plot, the actual difference in proportion between blacks and whites could very well have been produced by random chance: so we must reject the null hypothesis that there is no difference.  In fact the the dotplot is a probability density function and if you counted all the dots at and to the right of the red line, then divided by 1000(number of replicates) you would have the probability you could see this difference by mere chance alone.  Also known as a P-value, which in this case, equals 0.762.
+
+For each of the other income levels, the actual difference in proportion between black and whites could not have been produced by random chance, and the null hypothesis (stating that these is no difference) must be rejected.
+
+To further explore the research question.  We will consider weather or not to slice the data by sex, age, and education. 
+
+
+```{r}
+#create exploratory visualizations for income distribution by race and sex
+ggplot(new_gss, aes(income, fill = sex)) + 
+  geom_bar(position = "dodge")+
+  facet_wrap(~race, scales="free") + 
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  labs(title = "Income Distribution by Race and Sex")
+ 
+```
+
+Distributions of income between male and female workers appear to be the nearly the same in both the black and white samples.  Based on this visualization, slicing the data based on sex is unnecessary.
+
+```{r}
+#exploratory plot of income distribution for age and race
+ggplot(new_gss, aes(income, fill = age_range)) + 
+  geom_bar(position = "dodge")+
+  facet_wrap(~race, scales = "free") + 
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  labs(title = "Income Distribution by Race and Age")
+ 
+```
+The distributions of incomes across age ranges is different for blacks with older workers being more left skewed than  younger workers  Age appears to be an important parameter for this analysis. 
+
+For white workers, incomes appear to be nearly normally distributed across age groups.
+
+```{r}
+#exploratory plot of distributions of incomes by race and education
+ggplot(new_gss, aes(income, fill = degree)) + 
+  geom_bar(position = "dodge")+
+  facet_wrap(~race, scales = "free") + 
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  labs(title = "Income Distribution by Race and Education")
+ 
+```
+Incomes based on education appear to be more left skewed for blacks than whites, this is particularly evident for the High School levels and below.  At the Bachelors level and above, the differences are small or nonexistent.
+
+Based on the above visualizations, age and degree appear to be confounding variables so it would be worth slicing the data by these two parameters.  However, slicing the data to this degree can reduce the sample size beyond a statistically significant level
+
+
+
+```{r}
+#Sample size
+new_gss %>%
+  filter(race == "Black", age_range == "old") %>%
+  select(degree, income) %>%
+  table()
+```
+The sample sizes for older blacks with Junior college and above education are small and may not be not statistically reliable. However, most of the other combinations have a sufficiently large sample sizes and it is worthwhile to conduct an inferential test.
+
+```{r}
+#Perform inferential test (randomized, permuted null distribution) for proportion for each of the 5 #income levels using age and education as parameters.
+
+diffs<-perm_gss%>%
+  group_by(replicate, age_range, degree, race)%>%
+  summarize(
+    #find the proportion of each factor level of income
+    prop_avg = mean(income == "Average"),
+    prop_far_below = mean(income == "Far Below Average"),
+    prop_below = mean(income == "Below Average"),
+    prop_above = mean(income == "Above Average"),
+    prop_far_above = mean(income == "Far Above Average"),
+    #find the proportion ofeach factor level of random permuted incom
+    prop_avg_perm = mean(income_perm == "Average"),
+    prop_far_below_perm = mean(income_perm == "Far Below Average"),
+    prop_below_perm = mean(income_perm == "Below Average"),
+    prop_above_perm = mean(income_perm == "Above Average"),
+    prop_far_above_perm = mean(income_perm == "Far Above Average")
+  ) %>%
+  summarize(
+    #difference in incomes for each level by race
+    #
+    diff_avg = diff(prop_avg),
+    diff_far_below = diff(prop_far_below),
+    diff_below = diff(prop_below),
+    diff_above = diff(prop_above),
+    diff_far_above = diff(prop_far_above),
+    #differences in incomes for each random permuted level by race
+    #because the values were created through random sampling
+    #should be a null distribution centered around mean zero
+    diff_avg_perm = diff(prop_avg_perm),
+    diff_far_below_perm = diff(prop_far_below_perm),
+    diff_below_perm = diff(prop_below_perm),
+    diff_above_perm = diff(prop_above_perm),
+    diff_far_above_perm = diff(prop_far_above_perm)
+  )
+  
+  
+```
+
+```{r}
+#plot one distribution
+diffs %>%
+  filter(age_range == "old" & degree == "Bachelor")%>%
+  ggplot(aes(x=diff_below_perm))+
+    geom_dotplot(binwidth =  .005) + 
+    geom_density(col = "grey")+
+    geom_vline(aes(xintercept = diff_below), col = "red")+
+    labs(title = "Difference in proportion: Old age and Bachelor Degree")+
+    theme_classic()
+```
+
+
+Example plot for one possible combination of age and education.
+
+```{r}
+#pvalue table, one sided tests
+
+p_vals <- diffs %>%
+  group_by(age_range, degree) %>%
+  summarize(
+    pval_far_below = mean(diff_far_below_perm >= diff_far_below),
+    pval_below = mean(diff_below_perm >= diff_below),
+    pval_avg = mean(diff_avg_perm <= diff_avg),
+    pval_above = mean(diff_above_perm <= diff_above),
+    pval_far_above = mean(diff_far_above_perm <= diff_far_above)
+  )
+```
+```{r}
+#tidy up p_val data frame for analysis and plotting
+names(p_vals)[3:7] = c("Far Below Average", "Below Average", "Average", "Above Average", "Far Above Average")
+p_val_tidy <- gather(p_vals, key = "income_range", value = "p_value", -age_range, -degree)
+p_val_tidy <- p_val_tidy %>%
+  mutate(test_result = ifelse(p_value >= .05,"Fail to Reject the Null", "Reject the Null"))
+
+hypo_test <- p_val_tidy %>%
+  select(-p_value)
+#tidy but long hypothesis test results on sliced data
+hypo_test
+```
+
+Table shows the combinations of age, education, and race where we reject (or fail to reject) the null hypothesis and declare that there is a statistically significant difference in proportions (5% level of significance).
+
+
+
+```{r}
+
+ggplot(data = hypo_test, aes(x =income_range, fill=test_result)) +
+  geom_bar() + 
+  facet_grid(age_range ~ degree) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .25)) +
+  labs(y = "")
+
+
+```
+
+The visualization is easier to absorb than the table.  The results for the combination of Junior College and Old, do not resemble any of the other combinations.  This is due to the very small sample size and these results should be disregarded.
+
+You can see that for the first 3 education levels we reject the null hypothesis that the proportion of blacks and whites in the first 4 income brackets is the same and fail to reject the null hypothesis at the top income bracket (one exception to this is the less than high school, middle-aged, above average income combination).  For the first 3 education levels, our sliced data hypothesis tests agree with our original non-sliced tests.  
+
+Higher education levels are highly confounding to our original income bracket proportion test, and we fail to reject the null at many more combinations of variables.
+
+Based on the visualization, age is far less of a confounding variable if at all.
+
+Summary:  Black workers are over-represented in lower income brackets and under-represented in higher income brackets when compared to white workers (the exception being the highest income bracket).  This appears to be true across age, gender, and education levels up to high school.  However, at the education level of bachelors degree and above, the income distribution of black workers appears to be much closer to that of white workers.  Permutation and randomization were used to conduct statistical inference tests at a 5% significance level.
+
+This paper makes no statements as to the reasons for these differences; that is beyond the scope of this project.
+
+
+
+
+
